@@ -59,3 +59,33 @@ jobs:
         with:
           name: result
           path: result/
+
+      # Fork only: a test-signed AMD64 package for trying the change on a PC in test mode.
+      - name: Test-sign AMD64 package
+        shell: pwsh
+        run: |
+          $kits = 'C:\Program Files (x86)\Windows Kits\10\bin'
+          $ver = (Get-ChildItem $kits -Directory | Where-Object Name -like '10.*' | Sort-Object Name -Descending | Select-Object -First 1).Name
+          $signtool = "$kits\$ver\x64\signtool.exe"
+          $inf2cat = "$kits\$ver\x86\Inf2Cat.exe"
+          New-Item -ItemType Directory -Force testsign\AMD64 | Out-Null
+          Copy-Item build\AmtPtpDevice_AMD64.inf testsign\AMD64\AmtPtpDevice.inf
+          Copy-Item AmtPtpHidFilter\build\AmtPtpHidFilter\x64\Release\AmtPtpHidFilter.sys testsign\AMD64\
+          Copy-Item AmtPtpDeviceUsbUm\build\AmtPtpDeviceUsbUm\x64\Release\AmtPtpDeviceUsbUm.dll testsign\AMD64\
+          # Newer than the installed 2026.3984 so pnputil prefers it.
+          (Get-Content testsign\AMD64\AmtPtpDevice.inf) -replace '^DriverVer\s*=.*', 'DriverVer = 10/13/2026,2026.3985.1.1000' | Set-Content testsign\AMD64\AmtPtpDevice.inf
+          $cert = New-SelfSignedCertificate -Type CodeSigningCert -Subject 'CN=TrackpadClicks Test Driver' -CertStoreLocation Cert:\CurrentUser\My -NotAfter (Get-Date).AddYears(3)
+          Export-Certificate -Cert $cert -FilePath testsign\TrackpadClicksTestDriver.cer | Out-Null
+          & $signtool sign /fd sha256 /sha1 $cert.Thumbprint testsign\AMD64\AmtPtpHidFilter.sys testsign\AMD64\AmtPtpDeviceUsbUm.dll
+          if ($LASTEXITCODE) { exit 1 }
+          & $inf2cat /driver:testsign\AMD64 /os:10_X64,10_NI_X64 /uselocaltime
+          if ($LASTEXITCODE) { exit 1 }
+          & $signtool sign /fd sha256 /sha1 $cert.Thumbprint (Get-ChildItem testsign\AMD64\*.cat).FullName
+          if ($LASTEXITCODE) { exit 1 }
+          Get-ChildItem -Recurse testsign | ForEach-Object { $_.FullName }
+
+      - name: Upload test-signed package
+        uses: actions/upload-artifact@v4
+        with:
+          name: testsigned-amd64
+          path: testsign/
