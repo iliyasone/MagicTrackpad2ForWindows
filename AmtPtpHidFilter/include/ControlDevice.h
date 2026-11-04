@@ -63,7 +63,7 @@ PtpFilterHapticTrackpadRemoved(
 // (a push-to-talk key, say) while the rest of the pad keeps working. Input: ULONG, the
 // ContactID of the finger pressing, as in the PTP report. Accepted only while the button is
 // down; from the next report until the button comes up, Windows sees the button up, and that
-// contact lifting and then gone until it really lifts. The request stays pending and completes
+// contact lifting and then gone; after that, the contact shows again as a new touch. The request stays pending and completes
 // with STATUS_SUCCESS when the button comes up; cancel it (or close the handle) to end the hold
 // early. Fails at once with STATUS_DEVICE_NOT_READY when the button is already up, and with
 // STATUS_DEVICE_BUSY while another hold is pending. Only on \\.\AmtPtpHapticDeviceUm.

@@ -75,7 +75,7 @@ jobs:
           Copy-Item AmtPtpHidFilter\build\AmtPtpHidFilter\x64\Release\AmtPtpHidFilter.sys testsign\AMD64\
           Copy-Item AmtPtpDeviceUsbUm\build\AmtPtpDeviceUsbUm\x64\Release\AmtPtpDeviceUsbUm.dll testsign\AMD64\
           # Newer than the installed driver so pnputil prefers it.
-          (Get-Content testsign\AMD64\AmtPtpDevice.inf) -replace '^DriverVer\s*=.*', 'DriverVer = 11/04/2026,2026.3990.1.1000' | Set-Content testsign\AMD64\AmtPtpDevice.inf
+          (Get-Content testsign\AMD64\AmtPtpDevice.inf) -replace '^DriverVer\s*=.*', 'DriverVer = 11/04/2026,2026.3991.1.1000' | Set-Content testsign\AMD64\AmtPtpDevice.inf
           $cert = New-SelfSignedCertificate -Type CodeSigningCert -Subject 'CN=TrackpadClicks Test Driver' -CertStoreLocation Cert:\CurrentUser\My -NotAfter (Get-Date).AddYears(3)
           Export-Certificate -Cert $cert -FilePath testsign\TrackpadClicksTestDriver.cer | Out-Null
           & $signtool sign /fd sha256 /sha1 $cert.Thumbprint testsign\AMD64\AmtPtpHidFilter.sys testsign\AMD64\AmtPtpDeviceUsbUm.dll

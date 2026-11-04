@@ -212,13 +212,16 @@ PtpFilterHoldApply(
 		if (Button) {
 			Report->IsButtonClicked = 0;
 		} else {
+			// The finger shows again: it may press again at once (a double click), and the
+			// app must see it.
 			released = DriverContext->HoldRequest;
 			DriverContext->HoldRequest = NULL;
+			DriverContext->HiddenContact = HOLD_NO_CONTACT;
 		}
 	}
 
-	// The held finger: reported lifted once, then left out until it lifts for real, so that
-	// it neither points nor counts in a gesture, even after the button comes up.
+	// The held finger: reported lifted once, then left out while the button is down, so that
+	// it neither points nor counts in a gesture.
 	if (DriverContext->HiddenContact != HOLD_NO_CONTACT) {
 		for (i = 0; i < Report->ContactCount && i < PTP_MAX_CONTACT_POINTS; i++) {
 			PTP_CONTACT contact = Report->Contacts[i];
