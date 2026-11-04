@@ -123,7 +123,159 @@ PtpFilterEvtIoDeviceControl(
     WdfRequestCompleteWithInformation(Request, status, bytesReturned);
 }
 
-// Haptic device: opened by unprivileged apps, so it accepts IOCTL_PTPFILTER_ACTUATE and nothing else.
+//
+// Hold (IOCTL_PTPFILTER_HOLD, see ControlDevice.h).
+//
+
+static EVT_WDF_REQUEST_CANCEL PtpFilterEvtHoldCanceled;
+
+static VOID
+PtpFilterEvtHoldCanceled(
+    _In_ WDFREQUEST Request
+)
+{
+	PDRIVER_CONTEXT driverContext = PtpFilterDriverGetContext(WdfGetDriver());
+
+	// The app let go of the hold: Windows sees the pad as it is again.
+	WdfSpinLockAcquire(driverContext->HoldLock);
+	if (driverContext->HoldRequest == Request) {
+		driverContext->HoldRequest = NULL;
+		driverContext->HiddenContact = HOLD_NO_CONTACT;
+	}
+	WdfSpinLockRelease(driverContext->HoldLock);
+
+	WdfRequestComplete(Request, STATUS_CANCELLED);
+}
+
+static NTSTATUS
+PtpFilterControlHold(
+    _In_ PDRIVER_CONTEXT DriverContext,
+    _In_ WDFREQUEST Request
+)
+{
+	NTSTATUS status;
+	PULONG pContact = NULL;
+
+	status = WdfRequestRetrieveInputBuffer(Request, sizeof(ULONG), (PVOID*)&pContact, NULL);
+	if (!NT_SUCCESS(status)) {
+		TraceEvents(TRACE_LEVEL_ERROR, TRACE_DEVICE, "%!FUNC! WdfRequestRetrieveInputBuffer failed: %!STATUS!", status);
+		return status;
+	}
+
+	WdfSpinLockAcquire(DriverContext->HoldLock);
+	if (DriverContext->HoldRequest != NULL) {
+		status = STATUS_DEVICE_BUSY;
+	} else if (!DriverContext->RawButton) {
+		status = STATUS_DEVICE_NOT_READY;
+	} else {
+		// The Ex variant never calls the cancel routine from here, so holding the lock is safe.
+		status = WdfRequestMarkCancelableEx(Request, PtpFilterEvtHoldCanceled);
+		if (NT_SUCCESS(status)) {
+			DriverContext->HoldRequest = Request;
+			DriverContext->HiddenContact = *pContact;
+			DriverContext->HiddenLiftSent = FALSE;
+			status = STATUS_PENDING;
+		}
+	}
+	WdfSpinLockRelease(DriverContext->HoldLock);
+	return status;
+}
+
+// Ends a pending hold with Status: the button came up, or the trackpad went away.
+static VOID
+PtpFilterHoldComplete(
+    _In_ WDFREQUEST Request,
+    _In_ NTSTATUS Status
+)
+{
+	// STATUS_CANCELLED: the cancel routine runs and completes it.
+	if (WdfRequestUnmarkCancelable(Request) != STATUS_CANCELLED) {
+		WdfRequestComplete(Request, Status);
+	}
+}
+
+VOID
+PtpFilterHoldApply(
+    _In_ PDRIVER_CONTEXT DriverContext,
+    _In_ BOOLEAN Button,
+    _Inout_ PPTP_REPORT Report
+)
+{
+	WDFREQUEST released = NULL;
+	BOOLEAN touching = FALSE;
+	UCHAR i, kept = 0;
+
+	WdfSpinLockAcquire(DriverContext->HoldLock);
+	DriverContext->RawButton = Button;
+
+	if (DriverContext->HoldRequest != NULL) {
+		if (Button) {
+			Report->IsButtonClicked = 0;
+		} else {
+			released = DriverContext->HoldRequest;
+			DriverContext->HoldRequest = NULL;
+		}
+	}
+
+	// The held finger: reported lifted once, then left out until it lifts for real, so that
+	// it neither points nor counts in a gesture, even after the button comes up.
+	if (DriverContext->HiddenContact != HOLD_NO_CONTACT) {
+		for (i = 0; i < Report->ContactCount && i < PTP_MAX_CONTACT_POINTS; i++) {
+			PTP_CONTACT contact = Report->Contacts[i];
+			if (contact.ContactID == DriverContext->HiddenContact) {
+				if (contact.TipSwitch) {
+					touching = TRUE;
+				}
+				Report->MechanicalForce -= contact.Pressure;
+				if (DriverContext->HiddenLiftSent) {
+					continue;
+				}
+				DriverContext->HiddenLiftSent = TRUE;
+				contact.TipSwitch = 0;
+				contact.Width = 0;
+				contact.Height = 0;
+				contact.Pressure = 0;
+			}
+			Report->Contacts[kept++] = contact;
+		}
+		for (i = kept; i < Report->ContactCount && i < PTP_MAX_CONTACT_POINTS; i++) {
+			RtlZeroMemory(&Report->Contacts[i], sizeof(PTP_CONTACT));
+		}
+		Report->ContactCount = kept;
+		if (!touching) {
+			DriverContext->HiddenContact = HOLD_NO_CONTACT;
+		}
+	}
+	WdfSpinLockRelease(DriverContext->HoldLock);
+
+	if (released != NULL) {
+		PtpFilterHoldComplete(released, STATUS_SUCCESS);
+	}
+}
+
+// The trackpad went away: a pending hold ends, and nothing stays hidden.
+static VOID
+PtpFilterHoldEnd(
+    _In_ PDRIVER_CONTEXT DriverContext
+)
+{
+	WDFREQUEST request;
+
+	WdfSpinLockAcquire(DriverContext->HoldLock);
+	request = DriverContext->HoldRequest;
+	DriverContext->HoldRequest = NULL;
+	DriverContext->HiddenContact = HOLD_NO_CONTACT;
+	DriverContext->RawButton = FALSE;
+	WdfSpinLockRelease(DriverContext->HoldLock);
+
+	if (request != NULL) {
+		PtpFilterHoldComplete(request, STATUS_DEVICE_NOT_CONNECTED);
+	}
+}
+
+// Haptic device: opened by unprivileged apps, so it accepts IOCTL_PTPFILTER_ACTUATE and
+// IOCTL_PTPFILTER_HOLD and nothing else. Its queue is parallel: a hold stays pending while
+// actuations go through.
 VOID
 PtpFilterEvtIoHapticDeviceControl(
     _In_ WDFQUEUE Queue,
@@ -142,6 +294,11 @@ PtpFilterEvtIoHapticDeviceControl(
 
 	if (IoControlCode == IOCTL_PTPFILTER_ACTUATE) {
 		status = PtpFilterControlActuate(driverContext, Request, InputBufferLength);
+	} else if (IoControlCode == IOCTL_PTPFILTER_HOLD) {
+		status = PtpFilterControlHold(driverContext, Request);
+		if (status == STATUS_PENDING) {
+			return;
+		}
 	} else {
 		TraceEvents(TRACE_LEVEL_WARNING, TRACE_DRIVER, "Unsupported IOCTL on the haptic device: 0x%08lX", IoControlCode);
 		status = STATUS_INVALID_DEVICE_REQUEST;
@@ -153,14 +310,15 @@ PtpFilterEvtIoHapticDeviceControl(
 NTSTATUS
 PtpFilterControlDeviceQueueInitialize(
     _In_ WDFDEVICE Device,
-    _In_ PFN_WDF_IO_QUEUE_IO_DEVICE_CONTROL EvtIoDeviceControl
+    _In_ PFN_WDF_IO_QUEUE_IO_DEVICE_CONTROL EvtIoDeviceControl,
+    _In_ WDF_IO_QUEUE_DISPATCH_TYPE DispatchType
 )
 {
     WDF_IO_QUEUE_CONFIG queueConfig;
     NTSTATUS status;
     WDFQUEUE queue;
 
-    WDF_IO_QUEUE_CONFIG_INIT_DEFAULT_QUEUE(&queueConfig, WdfIoQueueDispatchSequential);
+    WDF_IO_QUEUE_CONFIG_INIT_DEFAULT_QUEUE(&queueConfig, DispatchType);
     queueConfig.EvtIoDeviceControl = EvtIoDeviceControl;
 
     status = WdfIoQueueCreate(Device,
@@ -183,6 +341,7 @@ PtpFilterCreateNamedControlDevice(
     _In_ PCUNICODE_STRING SymLink,
     _In_ PCUNICODE_STRING Sddl,
     _In_ PFN_WDF_IO_QUEUE_IO_DEVICE_CONTROL EvtIoDeviceControl,
+    _In_ WDF_IO_QUEUE_DISPATCH_TYPE DispatchType,
     _In_opt_ PWDF_FILEOBJECT_CONFIG FileObjectConfig,
     _Out_ WDFDEVICE* Device
 )
@@ -232,7 +391,7 @@ PtpFilterCreateNamedControlDevice(
         return status;
     }
 
-    status = PtpFilterControlDeviceQueueInitialize(controlDevice, EvtIoDeviceControl);
+    status = PtpFilterControlDeviceQueueInitialize(controlDevice, EvtIoDeviceControl, DispatchType);
     if (!NT_SUCCESS(status)) {
         WdfObjectDelete(controlDevice);
         return status;
@@ -257,7 +416,7 @@ PtpFilterCreateControlDevice(
     DECLARE_CONST_UNICODE_STRING(controlDeviceSymLink, L"\\DosDevices\\AmtPtpControlDeviceUm");
 
     status = PtpFilterCreateNamedControlDevice(Driver, &controlDeviceName, &controlDeviceSymLink,
-        &SDDL_DEVOBJ_SYS_ALL_ADM_ALL, PtpFilterEvtIoDeviceControl, NULL, &controlDevice);
+        &SDDL_DEVOBJ_SYS_ALL_ADM_ALL, PtpFilterEvtIoDeviceControl, WdfIoQueueDispatchSequential, NULL, &controlDevice);
     if (!NT_SUCCESS(status)) {
         return status;
     }
@@ -410,7 +569,7 @@ PtpFilterHapticTrackpadAdded(
     if (driverContext->HapticDevice == NULL) {
         WDF_FILEOBJECT_CONFIG_INIT(&fileConfig, PtpFilterEvtHapticFileCreate, PtpFilterEvtHapticFileClose, WDF_NO_EVENT_CALLBACK);
         status = PtpFilterCreateNamedControlDevice(Driver, &hapticDeviceName, &hapticDeviceSymLink,
-            hapticDeviceSddl, PtpFilterEvtIoHapticDeviceControl, &fileConfig, &hapticDevice);
+            hapticDeviceSddl, PtpFilterEvtIoHapticDeviceControl, WdfIoQueueDispatchParallel, &fileConfig, &hapticDevice);
         if (NT_SUCCESS(status)) {
             driverContext->HapticDevice = hapticDevice;
             driverContext->HapticHandles = 0;
@@ -451,6 +610,8 @@ PtpFilterHapticTrackpadStopped(
         driverContext->HapticTrackpad = NULL;
     }
     WdfWaitLockRelease(driverContext->HapticLock);
+
+    PtpFilterHoldEnd(driverContext);
 }
 
 VOID

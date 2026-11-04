@@ -27,6 +27,14 @@ typedef struct _DRIVER_CONTEXT {
 	LONG Trackpads;               // trackpad devices that exist (created, not yet cleaned up)
 	WDFDEVICE HapticTrackpad;     // started trackpad that IOCTL_PTPFILTER_ACTUATE sends to
 	ULONGLONG LastActuateTime;    // KeQueryInterruptTime() of the last actuation
+
+	// IOCTL_PTPFILTER_HOLD. HoldLock guards the fields below; the input path takes it at
+	// DISPATCH_LEVEL.
+	WDFSPINLOCK HoldLock;
+	WDFREQUEST HoldRequest;       // pending until the button comes up; NULL: no hold
+	ULONG HiddenContact;          // contact kept from Windows until it lifts, or HOLD_NO_CONTACT
+	BOOLEAN HiddenLiftSent;       // Windows has been told it lifted
+	BOOLEAN RawButton;            // the button in the last report, before a hold hides it
 	
 	BOOLEAN ButtonDisabled;
 	ULONG StopPressure;

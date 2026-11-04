@@ -59,4 +59,23 @@ PtpFilterHapticTrackpadRemoved(
 // the device DACL is what grants the call.
 #define IOCTL_PTPFILTER_ACTUATE          CTL_CODE(FILE_DEVICE_UNKNOWN, 0x802, METHOD_BUFFERED, FILE_WRITE_ACCESS)
 
+// IOCTL_PTPFILTER_HOLD: for an app that gives a press in part of the pad a meaning of its own
+// (a push-to-talk key, say) while the rest of the pad keeps working. Input: ULONG, the
+// ContactID of the finger pressing, as in the PTP report. Accepted only while the button is
+// down; from the next report until the button comes up, Windows sees the button up, and that
+// contact lifting and then gone until it really lifts. The request stays pending and completes
+// with STATUS_SUCCESS when the button comes up; cancel it (or close the handle) to end the hold
+// early. Fails at once with STATUS_DEVICE_NOT_READY when the button is already up, and with
+// STATUS_DEVICE_BUSY while another hold is pending. Only on \\.\AmtPtpHapticDeviceUm.
+#define IOCTL_PTPFILTER_HOLD             CTL_CODE(FILE_DEVICE_UNKNOWN, 0x803, METHOD_BUFFERED, FILE_WRITE_ACCESS)
+#define HOLD_NO_CONTACT                  ((ULONG)-1)
+
+// From the input path, at DISPATCH_LEVEL: applies a hold to a report before it goes up.
+VOID
+PtpFilterHoldApply(
+    _In_ PDRIVER_CONTEXT DriverContext,
+    _In_ BOOLEAN Button,
+    _Inout_ PPTP_REPORT Report
+);
+
 EXTERN_C_END

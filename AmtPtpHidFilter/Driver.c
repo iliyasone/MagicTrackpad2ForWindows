@@ -47,6 +47,12 @@ DriverEntry(
         TraceEvents(TRACE_LEVEL_ERROR, TRACE_DRIVER, "WdfWaitLockCreate failed %!STATUS!", status);
         return status;
     }
+    status = WdfSpinLockCreate(&attributes, &PtpFilterDriverGetContext(driver)->HoldLock);
+    if (!NT_SUCCESS(status)) {
+        TraceEvents(TRACE_LEVEL_ERROR, TRACE_DRIVER, "WdfSpinLockCreate failed %!STATUS!", status);
+        return status;
+    }
+    PtpFilterDriverGetContext(driver)->HiddenContact = HOLD_NO_CONTACT;
 	
     TraceEvents(TRACE_LEVEL_INFORMATION, TRACE_DRIVER, "%!FUNC! Driver Initialized");
     return STATUS_SUCCESS;

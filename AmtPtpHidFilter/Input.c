@@ -418,6 +418,8 @@ PtpFilterInputParseMT2Report(
 
 #undef UINT32_SET_MSB
 	}
+
+	PtpFilterHoldApply(driverContext, (BOOLEAN)(mt_report->Button != 0), &ptpOutputReport);
 	
 	DeviceContext->PrevIsButtonClicked = ptpOutputReport.IsButtonClicked;
 
